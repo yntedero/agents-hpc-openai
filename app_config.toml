@@ -1,0 +1,29 @@
+# Main app settings
+[app]
+# Mode when running: python main.py
+# Allowed: single, all, export, validate, agent
+mode = "export"
+
+# Path to dataset folder (relative paths are resolved from this config file location)
+data_dir = "../SortedAvgDiffAll88Datasets"
+
+# Output folder for export mode
+output_dir = "outputs"
+
+# Settings for mode = single
+[single]
+tasks = 10000
+distribution = "50/50"
+objective = "a"
+
+# Settings for mode = all
+[all]
+objective = "a"
+
+# Settings for mode = validate
+[validate]
+output_dir = "outputs"
+
+# Settings for mode = agent
+[agent]
+prompt = "For 10000 tasks and 50/50 distribution solve objective a"
