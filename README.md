@@ -1,101 +1,83 @@
-# agents-hpc-openai
+# HPC Infrastructure Optimizer — Multi-Agent System
 
-Simple agent-based solution for **HPC Theme 1**:
+University project (Tema 1): Agent-based approach to find optimal VM infrastructure for HPC simulations.
 
-Find a VM infrastructure tuple
-`(count_vm_1, count_vm_2, count_vm_3, count_vm_4)`
-from input:
-- tasks count (for example `10000`)
-- task distribution (for example `50/50`)
-- objective (`a`, `b`, or `c`)
+## Task
 
-The project works over 88 prepared CSV datasets and returns one best VM tuple per scenario.
+**Input:** number of tasks + distribution type (e.g. 10000 tasks, 50/50)
+**Output:** VM quadruple `(count_vm_1, count_vm_2, count_vm_3, count_vm_4)` minimizing:
 
-## Objective mapping
+- **a)** energy + makespan + all_vm_count
+- **b)** energy + makespan + all_vm_mips
+- **c)** energy + makespan + all_vm_cores
 
-- `a`: minimize `energy + makespan + all_vm_count`
-- `b`: minimize `energy + makespan + all_vm_mips`
-- `c`: minimize `energy + makespan + all_vm_cores`
+Works for all 88 input datasets (8 task counts x 11 distributions).
 
-## How this fits CloudSim
+## Method: Multi-Agent System + Pareto + TOPSIS
 
-- CloudSim generates simulation data.
-- This project reads those CSV results.
-- Agent/AI logic selects the best infrastructure tuple.
+Three **specialist agents** each evaluate candidates by one criterion:
 
-Pipeline:
-`CloudSim -> 88 CSV datasets -> this project -> VM recommendation`
+| Agent | Criterion |
+|-------|-----------|
+| EnergyAgent | total energy consumption |
+| TimeAgent | simulation time (makespan) |
+| ResourceAgent | vm_count / mips / cores (depends on objective) |
 
-## Project structure
+A **Coordinator** merges their proposals:
+1. Each agent proposes its top-N candidates
+2. Coordinator computes **Pareto front** (non-dominated solutions)
+3. Coordinator applies **TOPSIS** ranking on the Pareto front
+4. Returns the best compromise solution
 
-- `main.py` - CLI entrypoint and config-based run
-- `core.py` - core selection logic
-- `agent_runtime.py` - OpenAI agent tools wrapper
-- `app_config.toml` - central config
-- `outputs/` - generated `rec_a.csv`, `rec_b.csv`, `rec_c.csv`
+## VM Types
+
+| VM | MIPS | Cores | Power (W) |
+|----|------|-------|-----------|
+| VM1 | 2000 | 2 | 2 |
+| VM2 | 4000 | 2 | 3 |
+| VM3 | 12000 | 4 | 5 |
+| VM4 | 16000 | 4 | 6 |
+
+## Project Structure
+
+```
+agents-hpc-openai/
+├── main.py              — interactive menu
+├── data_loader.py       — CSV dataset loading
+├── pareto.py            — Pareto front computation
+├── topsis.py            — TOPSIS ranking
+├── agents/
+│   ├── base_agent.py    — base agent class
+│   ├── energy_agent.py  — minimizes energy
+│   ├── time_agent.py    — minimizes makespan
+│   ├── resource_agent.py— minimizes resource metric
+│   └── coordinator.py   — orchestrates agents
+└── outputs/             — rec_a.csv, rec_b.csv, rec_c.csv
+```
 
 ## Requirements
 
 - Python 3.11+
-- `pandas`
-- `openai-agents`
-- `python-dotenv`
-
-Install:
+- pandas, numpy
 
 ```bash
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
-## Environment
+## Usage
 
-Create `.env` from `.env.example`:
-
-```env
-OPENAI_API_KEY=your_openai_api_key
-```
-
-`single`, `all`, `export`, `validate` modes do not require API calls.
-`agent` mode requires `OPENAI_API_KEY`.
-
-## Config-first run
-
-Main settings are in `app_config.toml`.
-
-Important fields:
-- `[app].mode` = `single | all | export | validate | agent`
-- `[app].data_dir` = path to `SortedAvgDiffAll88Datasets`
-- `[app].output_dir` = output folder
-
-Run with config:
-
+Interactive mode:
 ```bash
 python main.py
 ```
 
-## CLI examples
-
+Export all results:
 ```bash
-python main.py single --tasks 10000 --distribution 50/50 --objective a
-python main.py all --objective b
-python main.py export --output-dir outputs
-python main.py validate
-python main.py agent --prompt "For 10000 tasks and 50/50 distribution solve objective a"
+python main.py --export
 ```
 
-## Validation
+## Pipeline
 
-`validate` checks:
-- all 88 datasets are present
-- full scenario grid exists (`8 task values x 11 distributions`)
-- every dataset has at least one row with `percentage_successful_tasks >= 100`
-- `rec_a.csv`, `rec_b.csv`, `rec_c.csv` are consistent
-
-## Deliverables
-
-Main generated outputs:
-- `outputs/rec_a.csv`
-- `outputs/rec_b.csv`
-- `outputs/rec_c.csv`
-
-Each file contains 88 recommendations (one per dataset).
+```
+CloudSim (Java) → 88 CSV datasets → Multi-Agent System → VM recommendation
+```

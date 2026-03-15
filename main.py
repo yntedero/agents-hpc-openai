@@ -1,264 +1,191 @@
 #!/usr/bin/env python3
+"""HPC Infrastructure Optimizer — Multi-Agent System.
 
-import argparse
-import os
-import tomllib
+Finds optimal VM infrastructure (count_vm_1..4) for 88 HPC datasets
+using specialist agents + Pareto front + TOPSIS.
+"""
+
+import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+import pandas as pd
 
-from core import export_all, recommend_all, recommend_single, validate_project
+from data_loader import find_data_dir, get_all_datasets, get_dataset, load_dataset
+from agents import Coordinator
+from agents.resource_agent import OBJECTIVE_COLUMN
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_DATA_DIR = str(SCRIPT_DIR.parent / "data" / "SortedAvgDiffAll88Datasets")
+OUTPUT_DIR = SCRIPT_DIR / "outputs"
 
-DEFAULT_CONFIG = {
-    "app": {
-        "mode": "export",
-        "data_dir": None,
-        "output_dir": "outputs",
-    },
-    "single": {
-        "tasks": 10000,
-        "distribution": "50/50",
-        "objective": "a",
-    },
-    "all": {
-        "objective": "a",
-    },
-    "agent": {
-        "prompt": "For 10000 tasks and 50/50 distribution solve objective a",
-    },
-    "validate": {
-        "output_dir": "outputs",
-    },
+OBJECTIVE_DESC = {
+    "a": "energy + makespan + all_vm_count",
+    "b": "energy + makespan + all_vm_mips",
+    "c": "energy + makespan + all_vm_cores",
 }
 
-
-def load_config(config_path):
-    cfg_path = Path(config_path).expanduser().resolve()
-    config = {
-        "app": dict(DEFAULT_CONFIG["app"]),
-        "single": dict(DEFAULT_CONFIG["single"]),
-        "all": dict(DEFAULT_CONFIG["all"]),
-        "agent": dict(DEFAULT_CONFIG["agent"]),
-        "validate": dict(DEFAULT_CONFIG["validate"]),
-    }
-
-    if not cfg_path.exists():
-        return config, cfg_path.parent
-
-    with cfg_path.open("rb") as f:
-        raw = tomllib.load(f)
-
-    for section in ("app", "single", "all", "agent", "validate"):
-        if section in raw and isinstance(raw[section], dict):
-            config[section].update(raw[section])
-
-    return config, cfg_path.parent
+OUTPUT_COLUMNS = [
+    "dataset_file", "tasks_count", "distribution", "objective",
+    "count_vm_1", "count_vm_2", "count_vm_3", "count_vm_4",
+    "total_energy_consumption", "simulation_time",
+    "all_vm_count", "all_vm_mips", "all_vm_cores", "topsis_score",
+]
 
 
-def resolve_path(cli_value, cfg_value, cfg_base_dir):
-    if cli_value is not None:
-        return str(Path(cli_value).expanduser().resolve())
-
-    if cfg_value is None:
+def solve_single(data_dir, tasks, distribution, objective, verbose=True):
+    """Solve one scenario and return the best candidate."""
+    csv_path = get_dataset(data_dir, tasks, distribution)
+    candidates = load_dataset(csv_path)
+    if not candidates:
+        print(f"  No valid candidates in {csv_path.name}")
         return None
 
-    p = Path(cfg_value).expanduser()
-    if not p.is_absolute():
-        p = cfg_base_dir / p
-    return str(p.resolve())
+    coordinator = Coordinator(objective)
+    best, logs = coordinator.solve(candidates, verbose=verbose)
+
+    if verbose:
+        for line in logs:
+            print(f"  {line}")
+
+    return best, csv_path.name
 
 
-def pick(cli_value, cfg_value, name):
-    value = cli_value if cli_value is not None else cfg_value
-    if value is None:
-        raise SystemExit(f"Missing value for {name}. Set it in CLI or config file.")
-    return value
+def solve_all(data_dir, objective, verbose=True):
+    """Solve all 88 datasets for one objective."""
+    index = get_all_datasets(data_dir)
+    results = []
 
-
-def build_parser():
-    parser = argparse.ArgumentParser(description="Simple agent solution for HPC Theme 1")
-    parser.add_argument("--config", default=str(SCRIPT_DIR / "app_config.toml"), help="Path to config file")
-    parser.add_argument(
-        "--data-dir",
-        default=None,
-        help="Path to SortedAvgDiffAll88Datasets (optional, can be in config)",
-    )
-
-    sub = parser.add_subparsers(dest="cmd")
-
-    one = sub.add_parser("single", help="Solve one scenario")
-    one.add_argument("--tasks", type=int)
-    one.add_argument("--distribution")
-    one.add_argument("--objective", choices=["a", "b", "c"])
-
-    all_cmd = sub.add_parser("all", help="Solve all 88 scenarios for one objective")
-    all_cmd.add_argument("--objective", choices=["a", "b", "c"])
-
-    export_cmd = sub.add_parser("export", help="Export rec_a.csv, rec_b.csv, rec_c.csv")
-    export_cmd.add_argument("--output-dir")
-
-    validate_cmd = sub.add_parser("validate", help="Validate datasets and exported recommendations")
-    validate_cmd.add_argument("--output-dir")
-
-    agent_cmd = sub.add_parser("agent", help="Run OpenAI Agent once")
-    agent_cmd.add_argument("--prompt")
-
-    return parser
-
-
-def run_single(data_dir, tasks, distribution, objective):
-    result = recommend_single(tasks, distribution, objective, data_dir)
-    quad = (
-        result["count_vm_1"],
-        result["count_vm_2"],
-        result["count_vm_3"],
-        result["count_vm_4"],
-    )
-    print(f"recommended_vm_quad={quad}")
-    print(result)
-
-
-def run_all(data_dir, objective):
-    rows = recommend_all(objective, data_dir)
-    print(f"recommendations={len(rows)}")
-    for row in rows[:10]:
-        print(
-            f"{row['tasks_count']:>5} {row['distribution']:<7} -> "
-            f"({row['count_vm_1']},{row['count_vm_2']},{row['count_vm_3']},{row['count_vm_4']}) "
-            f"score={row['score']}"
-        )
-
-
-def run_export(data_dir, output_dir):
-    exported = export_all(output_dir=output_dir, data_dir=data_dir)
-    for objective, path in exported.items():
-        print(f"[{objective}] {path}")
-
-
-def run_validate(data_dir, output_dir):
-    report = validate_project(data_dir=data_dir, output_dir=output_dir)
-
-    print("Validation summary")
-    print(f"- datasets_count: {report['datasets_count']}")
-    print(f"- full_grid: {report['full_grid']}")
-    print(f"- task_values: {report['task_values']}")
-    print(f"- distribution_values: {report['distribution_values']}")
-
-    missing_success = report["datasets_without_success100"]
-    if not missing_success:
-        print("- datasets_without_success100: 0")
-    else:
-        print(f"- datasets_without_success100: {len(missing_success)}")
-        for name in missing_success:
-            print(f"  - {name}")
-
-    print("- output_status:")
-    for objective in ("a", "b", "c"):
-        status = report["output_status"].get(objective, {})
-        if not status.get("exists"):
-            print(f"  - rec_{objective}.csv: missing")
+    for i, ((tasks, dist), csv_path) in enumerate(sorted(index.items()), 1):
+        candidates = load_dataset(csv_path)
+        if not candidates:
+            if verbose:
+                print(f"  [{i:>2}/88] {csv_path.name}: no valid candidates, skipping")
             continue
 
-        print(
-            "  - rec_{o}.csv: rows={rows}, objectives={obj}, unique_dataset_files={uniq}".format(
-                o=objective,
-                rows=status.get("rows"),
-                obj=status.get("objectives"),
-                uniq=status.get("unique_dataset_files"),
-            )
-        )
+        coordinator = Coordinator(objective)
+        best, _ = coordinator.solve(candidates)
+
+        if best:
+            best["dataset_file"] = csv_path.name
+            best["tasks_count"] = tasks
+            best["distribution"] = dist
+            best["objective"] = objective
+            results.append(best)
+
+        if verbose:
+            quad = f"({best['count_vm_1']},{best['count_vm_2']},{best['count_vm_3']},{best['count_vm_4']})" if best else "NONE"
+            print(f"  [{i:>2}/88] {csv_path.name}: {quad}")
+
+    return results
 
 
-def run_agent(data_dir, prompt):
-    try:
-        from agents import Runner
-    except ImportError:
-        raise SystemExit("openai-agents is not installed. Run: pip install -r requirements.txt")
+def export_results(data_dir):
+    """Export rec_a.csv, rec_b.csv, rec_c.csv."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    for obj in ("a", "b", "c"):
+        print(f"\n  Objective {obj} ({OBJECTIVE_DESC[obj]}):")
+        rows = solve_all(data_dir, obj, verbose=True)
+        path = OUTPUT_DIR / f"rec_{obj}.csv"
+        pd.DataFrame(rows).reindex(columns=OUTPUT_COLUMNS).to_csv(path, index=False)
+        print(f"  -> Saved {len(rows)} rows to {path}")
 
-    if not os.getenv("OPENAI_API_KEY"):
-        raise SystemExit("OPENAI_API_KEY is missing. Put it into .env or system env variables.")
 
-    from agent_runtime import build_agent
+def print_result(best, csv_name=None):
+    """Pretty-print a single result."""
+    if not best:
+        print("\n  No result found.")
+        return
+    print(f"\n  Result{f' ({csv_name})' if csv_name else ''}:")
+    print(f"  count_vm_1 = {best['count_vm_1']}")
+    print(f"  count_vm_2 = {best['count_vm_2']}")
+    print(f"  count_vm_3 = {best['count_vm_3']}")
+    print(f"  count_vm_4 = {best['count_vm_4']}")
+    print(f"  energy     = {best['total_energy_consumption']}")
+    print(f"  makespan   = {best['simulation_time']}")
+    print(f"  vm_count   = {best['all_vm_count']}")
+    print(f"  vm_mips    = {best['all_vm_mips']}")
+    print(f"  vm_cores   = {best['all_vm_cores']}")
+    print(f"  TOPSIS     = {best.get('topsis_score', 'N/A')}")
 
-    agent = build_agent(data_dir=data_dir)
-    try:
-        result = Runner.run_sync(agent, prompt)
-    except Exception as exc:
-        message = str(exc)
-        if "insufficient_quota" in message or "Error code: 429" in message:
-            raise SystemExit(
-                "OpenAI API quota is exceeded (429 insufficient_quota). "
-                "Direct modes single/all/export/validate still work."
-            )
-        raise SystemExit(f"Agent run failed: {message}")
 
-    print(result.final_output)
+def ask(prompt, default=None):
+    """Ask user for input with optional default."""
+    suffix = f" [{default}]" if default else ""
+    val = input(f"  {prompt}{suffix}: ").strip()
+    return val if val else default
+
+
+def menu():
+    data_dir = DEFAULT_DATA_DIR
+
+    while True:
+        print("\n=== HPC Infrastructure Optimizer (Multi-Agent) ===")
+        print(f"  Data: {data_dir}")
+        print()
+        print("  1. Solve single scenario")
+        print("  2. Solve all 88 datasets (objective a: energy+makespan+vm_count)")
+        print("  3. Solve all 88 datasets (objective b: energy+makespan+mips)")
+        print("  4. Solve all 88 datasets (objective c: energy+makespan+cores)")
+        print("  5. Export all results (rec_a.csv, rec_b.csv, rec_c.csv)")
+        print("  6. Change data directory")
+        print("  0. Exit")
+        print()
+
+        choice = ask("Choice", "1")
+
+        if choice == "0":
+            print("  Bye!")
+            break
+
+        elif choice == "1":
+            tasks = ask("Number of tasks", "10000")
+            dist = ask("Distribution (e.g. 50/50)", "50/50")
+            obj = ask("Objective (a/b/c)", "a")
+            print(f"\n  Solving: {tasks} tasks, {dist}, objective {obj} ({OBJECTIVE_DESC.get(obj, '?')})...")
+            try:
+                result = solve_single(data_dir, int(tasks), dist, obj)
+                if result:
+                    best, csv_name = result
+                    print_result(best, csv_name)
+            except Exception as e:
+                print(f"  Error: {e}")
+
+        elif choice in ("2", "3", "4"):
+            obj = {"2": "a", "3": "b", "4": "c"}[choice]
+            print(f"\n  Solving all 88 datasets for objective {obj} ({OBJECTIVE_DESC[obj]})...")
+            try:
+                rows = solve_all(data_dir, obj)
+                print(f"\n  Done: {len(rows)}/88 datasets solved.")
+            except Exception as e:
+                print(f"  Error: {e}")
+
+        elif choice == "5":
+            print("\n  Exporting all objectives...")
+            try:
+                export_results(data_dir)
+                print("\n  All exports complete!")
+            except Exception as e:
+                print(f"  Error: {e}")
+
+        elif choice == "6":
+            new_dir = ask("Path to SortedAvgDiffAll88Datasets", data_dir)
+            try:
+                find_data_dir(new_dir)
+                data_dir = new_dir
+                print(f"  Data directory set to: {data_dir}")
+            except FileNotFoundError as e:
+                print(f"  Error: {e}")
+
+        else:
+            print("  Unknown option, try again.")
 
 
 def main():
-    load_dotenv(SCRIPT_DIR / ".env")
-
-    parser = build_parser()
-    args = parser.parse_args()
-    cfg, cfg_base_dir = load_config(args.config)
-
-    mode = str(args.cmd or cfg["app"].get("mode", "single")).strip().lower()
-    data_dir = resolve_path(args.data_dir, cfg["app"].get("data_dir"), cfg_base_dir)
-
-    if mode == "single":
-        tasks = pick(getattr(args, "tasks", None), cfg["single"].get("tasks"), "single.tasks")
-        distribution = pick(
-            getattr(args, "distribution", None),
-            cfg["single"].get("distribution"),
-            "single.distribution",
-        )
-        objective = pick(
-            getattr(args, "objective", None),
-            cfg["single"].get("objective"),
-            "single.objective",
-        )
-        run_single(data_dir, int(tasks), str(distribution), str(objective))
-        return
-
-    if mode == "all":
-        objective = pick(
-            getattr(args, "objective", None),
-            cfg["all"].get("objective"),
-            "all.objective",
-        )
-        run_all(data_dir, str(objective))
-        return
-
-    if mode == "export":
-        output_dir = resolve_path(
-            getattr(args, "output_dir", None),
-            cfg["app"].get("output_dir", "outputs"),
-            cfg_base_dir,
-        )
-        run_export(data_dir, output_dir)
-        return
-
-    if mode == "validate":
-        output_dir = resolve_path(
-            getattr(args, "output_dir", None),
-            cfg["validate"].get("output_dir", cfg["app"].get("output_dir", "outputs")),
-            cfg_base_dir,
-        )
-        run_validate(data_dir, output_dir)
-        return
-
-    if mode == "agent":
-        prompt = pick(
-            getattr(args, "prompt", None),
-            cfg["agent"].get("prompt"),
-            "agent.prompt",
-        )
-        run_agent(data_dir, str(prompt))
-        return
-
-    raise SystemExit(f"Unknown mode: {mode}. Use single/all/export/validate/agent.")
+    if len(sys.argv) > 1 and sys.argv[1] == "--export":
+        data_dir = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_DATA_DIR
+        export_results(data_dir)
+    else:
+        menu()
 
 
 if __name__ == "__main__":
