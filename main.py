@@ -12,7 +12,6 @@ import pandas as pd
 
 from data_loader import find_data_dir, get_all_datasets, get_dataset, load_dataset
 from agents import Coordinator
-from agents.resource_agent import OBJECTIVE_COLUMN
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = str(SCRIPT_DIR.parent / "data" / "SortedAvgDiffAll88Datasets")
